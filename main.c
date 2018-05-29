@@ -13,33 +13,48 @@
 
 void* dealData(void* arg) {
 	int userFD = *((int*)arg);
-	char buf[4096];
+	char buf[8192];
 	memset(buf, 0, sizeof(buf));
 	struct timespec start, end;
 	clockid_t id = 1;
 	int n;
-	int fd = open("currentJson.json", O_RDWR | O_CREAT | O_APPEND);
+	int fd = open("currentJson.json", O_RDWR | O_CREAT | O_APPEND, 0777);
 	clock_gettime(id, &start);
-	while ((n = read(userFD, buf, sizeof(buf))) != EOF) {
-		if (n < 0) {
-			perror("Read Socket Error");
-			break;
-		} else {
-			write(fd, buf, n);
-		}
+	while ((n = read(userFD, buf, sizeof(buf))) > 0) {
+		printf("The thread id is : %ld, The n value is : %d.\n", pthread_self(), n);
+		write(fd, buf, n);
 		memset(buf, 0, sizeof(buf));
 	}	
-	if (n < 0) {
-		if (errno != EAGAIN) {
-			perror("Read");
-			exit(1);
-		}
+	if (n < 0 && errno != EAGAIN) {
+		perror("Read");
+		exit(1);
+	} else {
+		printf("EOF.\n");
 	}
 	clock_gettime(id, &end);
-	printf("The read operation costs %ld nanoseconds.\n", end.tv_nsec - start.tv_nsec);
-	printf("Read %d charactors. \n", n);
+	printf("The thread id is : %ld, The read operation costs %ld nanoseconds.\n", pthread_self(), end.tv_nsec - start.tv_nsec);
 
 	return ((void*)0);
+}
+
+int getRecvBufSize(int sock) {
+	int value;
+	socklen_t len = sizeof(value);
+	int status = getsockopt(sock, SOL_SOCKET, SO_RCVBUF, &value, &len);
+	if (status < 0) {
+		perror("Get Opt Error");
+	}
+	printf("The recv buf size is : %d.\n", value);
+	return status;
+}
+
+int setRecvBufSize(int sock, size_t len) {
+	int value = len;
+	socklen_t l = sizeof(value);
+	int status = setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &value, l);
+	if (status < 0) {
+		perror("Set Opt Error");
+	}
 }
 
 int main(int argc, char** argv) {
@@ -69,6 +84,10 @@ int main(int argc, char** argv) {
 		perror("Bind Error");
 		exit(1);
 	}
+
+	setRecvBufSize(listenSock, 20000);
+	getRecvBufSize(listenSock);
+
 	status = listen(listenSock, 5);
 	if (status < 0) {
 		perror("Listen Error");
@@ -110,6 +129,7 @@ int main(int argc, char** argv) {
 			perror("Epoll Wait Error");
 			exit(1);
 		}
+		printf("The events is : %d.\n", ret);
 		for (int i = 0; i < ret; ++i) {
 			if (events[i].data.fd == listenSock) {
 				struct sockaddr_in client;
@@ -130,22 +150,42 @@ int main(int argc, char** argv) {
 				if ((status = epoll_ctl(epfd, EPOLL_CTL_ADD, connFd, &currentEvent)) < 0) {
 					perror("Add Client Error");
 				}
+				getRecvBufSize(connFd);
 			} else {
-				/*char buf[4096];*/
-				/*memset(buf, 0, sizeof(buf));*/
-				/*int n = read(events[i].data.fd, buf, sizeof(buf));*/
-				/*n = read(events[i].data.fd, buf, sizeof(buf));*/
-				/*if (n < 0) {*/
-					/*perror("Read");*/
-				/*}*/
-				/*if (n == 0) {*/
-					/*printf("Peer close the socket");*/
-				/*}*/
-				/*printf("Read %d charactors. \n", n);*/
-				/*printf("There are some datas.The data is : \n");*/
-				/*printf("%s.\n", buf);*/
-				pthread_t tid;
-				pthread_create(&tid, NULL, dealData, (void*)&events[i].data.fd);
+				struct timespec start, end;
+				clockid_t id = 1;
+				int fd = open("current.json", O_RDWR | O_CREAT | O_APPEND, 0777);
+				if (fd < 0) {
+					perror("Open Error");
+					exit(1);
+				}
+				char buf[8192];
+				int rn, wn;
+				clock_gettime(id, &start);
+				sleep(10);
+				while (1) {
+					if ((rn = read(events[i].data.fd, buf, sizeof(buf))) > 0) {
+						printf("Read %d bytes data.\n", rn);
+						if ((wn = write(fd, buf, rn)) < 0) {
+							perror("Write Error");
+							break;
+						}
+					} else if (rn < 0) {
+						if (errno != EAGAIN) {
+							perror("Read Error");
+						} else {
+							printf("No data.\n");
+						}
+						break;
+					} else {
+						printf("EOF.\n");
+						break;
+					}
+				}
+				clock_gettime(id, &end);
+				printf("The Total Read Time is : %ld.\n", end.tv_nsec - start.tv_nsec);
+				/*pthread_t tid;*/
+				/*pthread_create(&tid, NULL, dealData, (void*)&events[i].data.fd);*/
 			}
 		}
 	}
