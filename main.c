@@ -10,6 +10,24 @@
 #include <pthread.h>
 #include <time.h>
 #include <errno.h>
+#include <arpa/inet.h>
+
+#include "util.h"
+
+int numThread = 8;
+int listenFD;
+
+static const char* response = "Here is some information.\n\0";
+
+int writeBytes(int fd, const char* str, size_t size) {
+	char buf[size];
+	memcpy(buf, str, size);
+	int n = write(fd, buf, size);
+	if (n < 0) {
+		return 0;
+	}
+	return 1;
+}
 
 void* dealData(void* arg) {
 	int userFD = *((int*)arg);
@@ -37,6 +55,49 @@ void* dealData(void* arg) {
 	return ((void*)0);
 }
 
+void* initWorkerThread(void* arg) {
+	int epfd = epoll_create1(0);
+	if (epfd < 0) {
+		perror("Epoll Create Error");
+		printf("The thread id is : %ld.\n", pthread_self());
+		pthread_exit((void*)1);
+	}
+
+	struct epoll_event ev;
+	memset(&ev, 0, sizeof(ev));
+	ev.data.fd = listenFD;
+	ev.events = EPOLLIN | EPOLLET; 
+
+	int ss = epoll_ctl(epfd, EPOLL_CTL_ADD, listenFD, &ev);
+	if (ss < 0) {
+		perror("Epoll Add Error");
+		pthread_exit((void*)1);
+	} else {
+		printf("Start Epoll Wait.\n");
+	}
+
+	struct epoll_event events[128];
+	while (1) {
+		int num = epoll_wait(epfd, events, 128, -1);
+		printf("Thread Wake up.\n");
+		
+		sleep(5);
+		for (int i = 0; i < num; ++i) {
+			if (events[i].data.fd == listenFD) {
+				struct sockaddr_in client;
+				socklen_t len;
+				int connFD = accept(listenFD, (struct sockaddr*)&client, &len);
+				if (connFD < 0 && errno == EAGAIN) {
+					printf("The resource is not exist.\n");
+				} else {
+					printf("Thread id is : %ld, The client port is : %d.\n", pthread_self(), ntohs(client.sin_port));
+				}
+			}
+		}
+	}
+	return ((void*)0);
+}
+
 int getRecvBufSize(int sock) {
 	int value;
 	socklen_t len = sizeof(value);
@@ -57,7 +118,124 @@ int setRecvBufSize(int sock, size_t len) {
 	}
 }
 
+void initWorker() {
+	int epfd = epoll_create1(0);
+	if (epfd < 0) {
+		perror("Epoll Create Error");
+		/*printf("The thread id is : %ld.\n", pthread_self());*/
+		/*pthread_exit((void*)1);*/
+	}
+
+	/*printf("The Process id is : %d.\n", getpid());*/
+	/*while (1) {}*/
+
+	struct epoll_event ev;
+	memset(&ev, 0, sizeof(ev));
+	ev.data.fd = listenFD;
+	ev.events = EPOLLIN | EPOLLET; 
+
+	int ss = epoll_ctl(epfd, EPOLL_CTL_ADD, listenFD, &ev);
+	if (ss < 0) {
+		perror("Epoll Add Error");
+		pthread_exit((void*)1);
+	} else {
+		printf("Start Epoll Wait.\n");
+	}
+
+	int flags = fcntl(listenFD, F_GETFL, 0);
+	flags &= O_NONBLOCK;
+	if (flags) {
+		printf("Has O_NONBLOCK.\n");
+	}
+
+	struct epoll_event events[128];
+	while (1) {
+		int num = epoll_wait(epfd, events, 128, -1);
+		printf("Process Wake up.\n");
+		
+		for (int i = 0; i < num; ++i) {
+			printf("In the For.\n");
+			if (events[i].data.fd == listenFD) {
+				struct sockaddr_in client;
+				socklen_t len;
+				int connFD = accept(listenFD, (struct sockaddr*)&client, &len);
+				if (connFD < 0 && errno == EAGAIN) {
+					printf("The resource is not exist.\n");
+				} else if (connFD < 0) {
+					perror("Accept Error");
+				} else {
+					/*printf("Thread id is : %d, The client port is : %d.\n", getpid(), ntohs(client.sin_port));*/
+					setSocketNonBlock(connFD);
+					struct epoll_event currentEvent;
+					memset(&currentEvent, 0, sizeof(currentEvent));
+					currentEvent.data.fd = connFD;
+					currentEvent.events = EPOLLET | EPOLLIN | EPOLLOUT;
+					int st = epoll_ctl(epfd, EPOLL_CTL_ADD, connFD, &currentEvent);
+					if (st < 0) {
+						perror("Epoll Control Error");
+					}
+				}
+			} else if (events[i].events & EPOLLIN) {
+				char buf[1024];
+				int nu = read(events[i].data.fd, buf, sizeof(buf));
+				write(STDOUT_FILENO, buf, strlen(buf));
+			} else if (events[i].events & EPOLLOUT) {
+				if (!writeBytes(events[i].events, response, strlen(response))) {
+					perror("Write Error");
+				}
+			}
+		}
+		printf("Out the For.\n");
+	}
+}
+
 int main(int argc, char** argv) {
+	pthread_t threadArr[numThread];
+	listenFD = socket(AF_INET, SOCK_STREAM, 0);
+	if (listenFD < 0) {
+		perror("Socket Error");
+	}
+
+	setSocketNonBlock(listenFD);
+
+	struct sockaddr_in server;
+	memset(&server, 0, sizeof(server));
+	server.sin_family = AF_INET;
+	server.sin_port = htons(4321);
+	server.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	int ss = bind(listenFD, (struct sockaddr*)&server, sizeof(server)); 
+	if (ss < 0) {
+		perror("Bind Error");
+	}
+	
+	ss = listen(listenFD, 5);
+	if (ss < 0) {
+		perror("Listen Error");
+	}
+
+	int n;
+	for (int i = 0; i < numThread; ++i) {
+		/*ss = pthread_create(&threadArr[i], NULL, initWorkerThread, NULL);*/
+		/*printf("The %dth thread id is : %ld.\n", i, threadArr[i]);*/
+		/*if (ss < 0) {*/
+			/*perror("Thread Create Error");*/
+		/*}*/
+		if ((n = fork()) == 0) {
+			initWorker();
+			break;
+		} else if (n > 0) {
+			printf("The child process id is : %d.\n", n);
+		}
+	}
+
+	while (1) {}
+
+	return 0;
+}
+
+
+/*int main(int argc, char** argv) {
 	int listenSock = socket(AF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in server;
 	socklen_t len;
@@ -85,7 +263,7 @@ int main(int argc, char** argv) {
 		exit(1);
 	}
 
-	setRecvBufSize(listenSock, 20000);
+	setRecvBufSize(listenSock, 10000);
 	getRecvBufSize(listenSock);
 
 	status = listen(listenSock, 5);
@@ -182,15 +360,16 @@ int main(int argc, char** argv) {
 						break;
 					}
 				}
+
 				clock_gettime(id, &end);
 				printf("The Total Read Time is : %ld.\n", end.tv_nsec - start.tv_nsec);
-				/*pthread_t tid;*/
-				/*pthread_create(&tid, NULL, dealData, (void*)&events[i].data.fd);*/
+				pthread_t tid;
+				pthread_create(&tid, NULL, dealData, (void*)&events[i].data.fd);
 			}
 		}
 	}
 
 	close(listenSock);
 	return 0;
-}
+}*/
 

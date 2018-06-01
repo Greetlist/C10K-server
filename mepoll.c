@@ -19,7 +19,7 @@ extern int controlEpollInstance(int epfd, int operation, int fd, struct epoll_ev
 	return status;
 }
 
-extern int waitEpollInstance(int epfd, struct epoll_event* events, int maxEvent, int timeOut) {
+extern int waitEpollEvents(int epfd, struct epoll_event* events, int maxEvent, int timeOut) {
 	int fds = -2;
 	if ((fds = epoll_wait(epfd, events, maxEvent, timeOut)) == -1) {
 		perror("An Error occurs when call epoll_wait");

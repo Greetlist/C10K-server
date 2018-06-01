@@ -1,3 +1,9 @@
-#include "util.h"
+#ifndef SERVER_H
+#define SERVER_H
 
-extern void run();
+#include "util.h"
+#include "mepoll.h"
+
+extern void run(const char* ip, int port);
+
+#endif
