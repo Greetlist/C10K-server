@@ -13,9 +13,15 @@
 #include <arpa/inet.h>
 
 #include "util.h"
+#include "ipcunix.h"
 
-int numThread = 8;
+int numThread = 2;
 int listenFD;
+
+typedef struct {
+	int pid;
+	int connectFD;
+} ProcessInfo;
 
 static const char* response = "Here is some information.\n\0";
 
@@ -81,7 +87,6 @@ void* initWorkerThread(void* arg) {
 		int num = epoll_wait(epfd, events, 128, -1);
 		printf("Thread Wake up.\n");
 		
-		sleep(5);
 		for (int i = 0; i < num; ++i) {
 			if (events[i].data.fd == listenFD) {
 				struct sockaddr_in client;
@@ -118,74 +123,71 @@ int setRecvBufSize(int sock, size_t len) {
 	}
 }
 
-void initWorker() {
+int initWorker(int pipeFD) {
+	close(listenFD);
 	int epfd = epoll_create1(0);
 	if (epfd < 0) {
 		perror("Epoll Create Error");
-		/*printf("The thread id is : %ld.\n", pthread_self());*/
-		/*pthread_exit((void*)1);*/
 	}
-
-	/*printf("The Process id is : %d.\n", getpid());*/
-	/*while (1) {}*/
 
 	struct epoll_event ev;
 	memset(&ev, 0, sizeof(ev));
-	ev.data.fd = listenFD;
+	ev.data.fd = pipeFD;
 	ev.events = EPOLLIN | EPOLLET; 
 
-	int ss = epoll_ctl(epfd, EPOLL_CTL_ADD, listenFD, &ev);
+	int ss = epoll_ctl(epfd, EPOLL_CTL_ADD, pipeFD, &ev);
 	if (ss < 0) {
 		perror("Epoll Add Error");
-		pthread_exit((void*)1);
+		exit(1);
 	} else {
 		printf("Start Epoll Wait.\n");
 	}
 
-	int flags = fcntl(listenFD, F_GETFL, 0);
-	flags &= O_NONBLOCK;
-	if (flags) {
-		printf("Has O_NONBLOCK.\n");
-	}
-
+	int current = 0;
 	struct epoll_event events[128];
 	while (1) {
 		int num = epoll_wait(epfd, events, 128, -1);
-		printf("Process Wake up.\n");
-		
+		printf("The pid is : %d.\n", getpid());
 		for (int i = 0; i < num; ++i) {
-			printf("In the For.\n");
-			if (events[i].data.fd == listenFD) {
-				struct sockaddr_in client;
-				socklen_t len;
-				int connFD = accept(listenFD, (struct sockaddr*)&client, &len);
-				if (connFD < 0 && errno == EAGAIN) {
-					printf("The resource is not exist.\n");
-				} else if (connFD < 0) {
-					perror("Accept Error");
+			if (events[i].data.fd == pipeFD) {
+				int client;
+				int status = recvFD(pipeFD, NULL);
+				if (status > 0) {
+					client = status;
 				} else {
-					/*printf("Thread id is : %d, The client port is : %d.\n", getpid(), ntohs(client.sin_port));*/
-					setSocketNonBlock(connFD);
-					struct epoll_event currentEvent;
-					memset(&currentEvent, 0, sizeof(currentEvent));
-					currentEvent.data.fd = connFD;
-					currentEvent.events = EPOLLET | EPOLLIN | EPOLLOUT;
-					int st = epoll_ctl(epfd, EPOLL_CTL_ADD, connFD, &currentEvent);
-					if (st < 0) {
-						perror("Epoll Control Error");
-					}
+					perror("Read File Descriptor Error");
 				}
-			} else if (events[i].events & EPOLLIN) {
-				char buf[1024];
-				int nu = read(events[i].data.fd, buf, sizeof(buf));
-				write(STDOUT_FILENO, buf, strlen(buf));
-			} else if (events[i].events & EPOLLOUT) {
-				if (!writeBytes(events[i].events, response, strlen(response))) {
-					perror("Write Error");
+
+				struct epoll_event currentEvent;
+				memset(&currentEvent, 0, sizeof(currentEvent));
+				currentEvent.events = EPOLLET | EPOLLIN;
+				currentEvent.data.fd = client;
+				setSocketNonBlock(client);
+				status = epoll_ctl(epfd, EPOLL_CTL_ADD, client, &currentEvent);
+				if (status < 0) {
+					perror("Epoll Error");
+				}
+				printf("Deal With Pipe.The pid is : %d, The client is : %d.\n", getpid(), client);
+			} else {
+				if (events[i].events & EPOLLIN) {
+					/*printf("%d, Deal With Socket.\n", getpid());*/
+					char rBuff[1024];
+					int status = read(events[i].data.fd, rBuff, sizeof(rBuff));
+					if (status > 0) {
+						printf("The message is : %s.\n", rBuff);
+						/*write(events[i].data.fd, rBuff, strlen(rBuff));*/
+					} else if (status == 0) {
+						printf("Peer close the connection.\n");
+						shutdown(events[i].data.fd, SHUT_RDWR);
+						close(events[i].data.fd);
+						status = epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
+					} else if (status < 0 && errno != EAGAIN) {
+						printf("Wrong Pid is : %d.\n", getpid());
+						/*perror("Read Error");*/
+					}
 				}
 			}
 		}
-		printf("Out the For.\n");
 	}
 }
 
@@ -195,8 +197,6 @@ int main(int argc, char** argv) {
 	if (listenFD < 0) {
 		perror("Socket Error");
 	}
-
-	setSocketNonBlock(listenFD);
 
 	struct sockaddr_in server;
 	memset(&server, 0, sizeof(server));
@@ -208,11 +208,9 @@ int main(int argc, char** argv) {
 	if (ss < 0) {
 		perror("Bind Error");
 	}
-	
-	ss = listen(listenFD, 5);
-	if (ss < 0) {
-		perror("Listen Error");
-	}
+
+	ProcessInfo processes[numThread];
+	int currentProcess = 0;
 
 	int n;
 	for (int i = 0; i < numThread; ++i) {
@@ -221,15 +219,52 @@ int main(int argc, char** argv) {
 		/*if (ss < 0) {*/
 			/*perror("Thread Create Error");*/
 		/*}*/
+		int currentfd[2];
+		int currentSock = socketpair(AF_UNIX, SOCK_STREAM, 0, currentfd);
 		if ((n = fork()) == 0) {
-			initWorker();
+			close(currentfd[1]);
+			initWorker(currentfd[0]);
 			break;
 		} else if (n > 0) {
-			printf("The child process id is : %d.\n", n);
+			/*printf("The child process id is : %d.\n", n);*/
+			close(currentfd[0]);
+			processes[i].pid = n;
+			processes[i].connectFD = currentfd[1];
 		}
 	}
 
-	while (1) {}
+	setSocketNonBlock(listenFD);
+	ss = listen(listenFD, 64);
+	if (ss < 0) {
+		perror("Listen Error");
+	}
+
+	int epfd = epoll_create1(0);
+	struct epoll_event ev;
+	memset(&ev, 0, sizeof(ev));
+	ev.data.fd = listenFD;
+	ev.events = EPOLLET | EPOLLIN;
+	int st = epoll_ctl(epfd, EPOLL_CTL_ADD, listenFD, &ev);
+
+	struct epoll_event events[128];
+	while (1) {
+		int nums = epoll_wait(epfd, events, 128, -1);
+		printf("The event num is : %d.\n", nums);
+		for (int i = 0; i < nums; ++i) {
+			if (events[i].data.fd == listenFD) {
+				struct sockaddr_in cli;
+				socklen_t len;
+				memset(&cli, 0, sizeof(cli));
+				int clientFD = accept(listenFD, (struct sockaddr*)&cli, &len);
+				if (clientFD < 0) {
+					perror("Accept Error");
+				}
+				printf("Parent.The client is %d.\n", clientFD);
+				sendFD(processes[(currentProcess++) % numThread].connectFD, clientFD);
+				close(clientFD);
+			}
+		}
+	}
 
 	return 0;
 }
