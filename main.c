@@ -15,7 +15,7 @@
 #include "util.h"
 #include "ipcunix.h"
 
-int numThread = 2;
+int numThread = 3;
 int listenFD;
 
 typedef struct {
@@ -172,15 +172,31 @@ int initWorker(int pipeFD) {
 				if (events[i].events & EPOLLIN) {
 					/*printf("%d, Deal With Socket.\n", getpid());*/
 					char rBuff[1024];
-					int status = read(events[i].data.fd, rBuff, sizeof(rBuff));
-					if (status > 0) {
-						printf("The message is : %s.\n", rBuff);
-						/*write(events[i].data.fd, rBuff, strlen(rBuff));*/
+					char wBuff[1024];
+					memset(rBuff, 0, sizeof(rBuff));
+					memset(wBuff, 0, sizeof(wBuff));
+					int status = 0;
+					while ((status = read(events[i].data.fd, rBuff, sizeof(rBuff))) > 0) {
+						printf("The message is :\n %s.\n", rBuff);
+					}
+					if (status < 0 && errno == EAGAIN) {
+						const char* response = "HTTP/1.1 200 OK\r\n" \
+										  "Date: Fri, 26, Jun 2018 14:05:23 GMT\r\n" \
+										  "Server: Test\r\n" \
+										  "Content-Type: text/css\r\n" \
+										  "Content-Length: 0\r\n" \
+										  "Connection: keep-alive\r\n" \
+										  "\r\n" \
+										  "Success Recv The Message.\r\n";
+						memcpy(wBuff, response, strlen(response));
+						if ((status = write(events[i].data.fd, wBuff, strlen(wBuff))) < 0) {
+							perror("Write Error");
+						}
 					} else if (status == 0) {
-						printf("Peer close the connection.\n");
 						shutdown(events[i].data.fd, SHUT_RDWR);
 						close(events[i].data.fd);
 						status = epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
+						printf("Peer close the connection.\n");
 					} else if (status < 0 && errno != EAGAIN) {
 						printf("Wrong Pid is : %d.\n", getpid());
 						/*perror("Read Error");*/
@@ -255,13 +271,15 @@ int main(int argc, char** argv) {
 				struct sockaddr_in cli;
 				socklen_t len;
 				memset(&cli, 0, sizeof(cli));
-				int clientFD = accept(listenFD, (struct sockaddr*)&cli, &len);
+				int clientFD = 0;
+				while ((clientFD = accept(listenFD, (struct sockaddr*)&cli, &len)) > 0) {
+					printf("Parent.The client is %d.\n", clientFD);
+					sendFD(processes[(currentProcess++) % numThread].connectFD, clientFD);
+					close(clientFD);
+				}
 				if (clientFD < 0) {
 					perror("Accept Error");
 				}
-				printf("Parent.The client is %d.\n", clientFD);
-				sendFD(processes[(currentProcess++) % numThread].connectFD, clientFD);
-				close(clientFD);
 			}
 		}
 	}
