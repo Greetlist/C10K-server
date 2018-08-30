@@ -277,7 +277,7 @@ int main(int argc, char** argv) {
 					sendFD(processes[(currentProcess++) % numThread].connectFD, clientFD);
 					close(clientFD);
 				}
-				if (clientFD < 0) {
+				if (clientFD < 0 && errno != EAGAIN) {
 					perror("Accept Error");
 				}
 			}
