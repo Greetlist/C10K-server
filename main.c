@@ -11,6 +11,7 @@
 #include <time.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <sys/stat.h>
 
 #include "util.h"
 #include "ipcunix.h"
@@ -147,7 +148,10 @@ int initWorker(int pipeFD) {
 	struct epoll_event events[128];
 	while (1) {
 		int num = epoll_wait(epfd, events, 128, -1);
-		printf("The pid is : %d.\n", getpid());
+		if (num < 0) {
+			perror("Epoll Error");
+		}
+		/*printf("The pid is : %d.\n", getpid());*/
 		for (int i = 0; i < num; ++i) {
 			if (events[i].data.fd == pipeFD) {
 				int client;
@@ -155,30 +159,36 @@ int initWorker(int pipeFD) {
 				if (status > 0) {
 					client = status;
 				} else {
-					perror("Read File Descriptor Error");
+					printf("Read File Descriptor Error.\n");
+					continue;
 				}
 
 				struct epoll_event currentEvent;
 				memset(&currentEvent, 0, sizeof(currentEvent));
+				setSocketNonBlock(client);
 				currentEvent.events = EPOLLET | EPOLLIN;
 				currentEvent.data.fd = client;
-				setSocketNonBlock(client);
 				status = epoll_ctl(epfd, EPOLL_CTL_ADD, client, &currentEvent);
 				if (status < 0) {
 					perror("Epoll Error");
 				}
-				printf("Deal With Pipe.The pid is : %d, The client is : %d.\n", getpid(), client);
+				/*printf("Deal With Pipe.The pid is : %d, The client is : %d.\n", getpid(), client);*/
 			} else {
 				if (events[i].events & EPOLLIN) {
-					/*printf("%d, Deal With Socket.\n", getpid());*/
 					char rBuff[1024];
 					char wBuff[1024];
 					memset(rBuff, 0, sizeof(rBuff));
 					memset(wBuff, 0, sizeof(wBuff));
 					int status = 0;
 					while ((status = read(events[i].data.fd, rBuff, sizeof(rBuff))) > 0) {
-						printf("The message is :\n %s.\n", rBuff);
+						/*write(STDOUT_FILENO, rBuff, status);*/
+
+						/*printf("Pid : %ld, size is %ld.\n", getpid(), strlen(rBuff));*/
+						/*printf("%s", rBuff);*/
+						/*printf("The message is :\n %s.\n", rBuff);*/
 					}
+					printf("2-----------   %d\n", status);
+					/*printf("After Msg, the status is : %d.\n", status);*/
 					if (status < 0 && errno == EAGAIN) {
 						const char* response = "HTTP/1.1 200 OK\r\n" \
 										  "Date: Fri, 26, Jun 2018 14:05:23 GMT\r\n" \
@@ -193,13 +203,16 @@ int initWorker(int pipeFD) {
 							perror("Write Error");
 						}
 					} else if (status == 0) {
+						status = epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
 						shutdown(events[i].data.fd, SHUT_RDWR);
 						close(events[i].data.fd);
-						status = epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
 						printf("Peer close the connection.\n");
 					} else if (status < 0 && errno != EAGAIN) {
 						printf("Wrong Pid is : %d.\n", getpid());
-						/*perror("Read Error");*/
+						perror("Read Error");
+						status = epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
+						shutdown(events[i].data.fd, SHUT_RDWR);
+						close(events[i].data.fd);
 					}
 				}
 			}
@@ -269,12 +282,15 @@ int main(int argc, char** argv) {
 		for (int i = 0; i < nums; ++i) {
 			if (events[i].data.fd == listenFD) {
 				struct sockaddr_in cli;
-				socklen_t len;
+				socklen_t len = sizeof(struct sockaddr_in);
 				memset(&cli, 0, sizeof(cli));
 				int clientFD = 0;
 				while ((clientFD = accept(listenFD, (struct sockaddr*)&cli, &len)) > 0) {
 					printf("Parent.The client is %d.\n", clientFD);
-					sendFD(processes[(currentProcess++) % numThread].connectFD, clientFD);
+					int curStatus = sendFD(processes[(currentProcess++) % numThread].connectFD, clientFD);
+					if (curStatus < 0) {
+						perror("Send FD Error");
+					}
 					close(clientFD);
 				}
 				if (clientFD < 0 && errno != EAGAIN) {
@@ -283,6 +299,7 @@ int main(int argc, char** argv) {
 			}
 		}
 	}
+	perror("Final Error is ");
 
 	return 0;
 }

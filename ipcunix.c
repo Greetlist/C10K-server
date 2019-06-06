@@ -6,8 +6,8 @@ extern int sendFD(int fd, int fdSend) {
 	memset(&msg, 0, sizeof(msg));
 	char buf[128];
 
-	const char* str = "Hello World.\n";
-	memcpy(buf, str, strlen(str));
+	/*const char* str = "Hello World.\n";*/
+	/*memcpy(buf, str, strlen(str));*/
 	iov[0].iov_base = buf;
 	iov[0].iov_len = 128;
 
@@ -16,7 +16,8 @@ extern int sendFD(int fd, int fdSend) {
 	msg.msg_name = NULL;
 	msg.msg_namelen = 0;
 
-	struct cmsghdr* cmsg = malloc(sizeof(struct cmsghdr));
+	/*struct cmsghdr* cmsg = malloc(sizeof(struct cmsghdr));*/
+	struct cmsghdr* cmsg = malloc(CONTROLLEN);
 	if (fdSend < 0) {
 		return -1;
 	} else {
@@ -29,6 +30,7 @@ extern int sendFD(int fd, int fdSend) {
 		msg.msg_controllen = CONTROLLEN;
 		*(int*)CMSG_DATA(cmsg) = fdSend;
 	}
+	/*printf("The send fd is : %d.\n", fdSend);*/
 
 	int numSend;
 	if ((numSend = sendmsg(fd, &msg, 0)) < 0) {
@@ -67,6 +69,7 @@ extern int recvFD(int fd, ssize_t (*userfunc)(int, const void*, size_t)) {
 			return -1;
 		} else {
 			newFD = *(int*)CMSG_DATA(cmsg);
+			/*printf("The recv fd is : %d.\n", newFD);*/
 			return newFD;
 		}
 	}
